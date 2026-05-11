@@ -4,8 +4,8 @@ import asyncio
 from telegram import Bot
 
 # هاد الجزء هو عقل البوت اللي بيحلل السيولة
-TOKEN =AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs "حط_هون_الكود_الطويل_اللي_أخذته_من_بوت_فاذر"
-CHAT_ID =900307207 "حط_هون_الرقم_اللي_أخذته_من_يوزر_انفو_بوت"
+TOKEN = AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs "حط_هون_الكود_الطويل_اللي_أخذته_من_بوت_فاذر"
+CHAT_ID = 900307207 "حط_هون_الرقم_اللي_أخذته_من_يوزر_انفو_بوت"
 
 bot = Bot(token=TOKEN)
 
