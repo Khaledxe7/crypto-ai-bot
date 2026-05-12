@@ -9,24 +9,42 @@ CHAT_ID = "900307207"
 bot = Bot(token=TOKEN)
 
 last_prices = {}
+active_trades = {}  # لتخزين الصفقات المفتوحة ومراقبة أهدافها
 
-def get_harmonic_levels(price):
-    """حساب مستويات الهارمونيك الذهبية (PRZ - Potential Reversal Zone)"""
-    # نسب فيبوناتشي الأساسية للهارمونيك
-    prz_886 = price * 1.00886  # نقطة الانعكاس العميق (Deep Crab/Bat)
-    prz_786 = price * 1.00786  # نقطة الفراشة (Butterfly)
-    prz_1618 = price * 1.01618 # الهدف الانفجاري للموجة
-    
-    return {
-        "d_point": prz_886,
-        "butterfly": prz_786,
-        "extension": prz_1618
-    }
+async def monitor_active_trades():
+    """مراقبة الصفقات المفتوحة لإرسال تنبيهات الهدف والستوب"""
+    global active_trades
+    try:
+        if not active_trades:
+            return
+
+        res = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=10).json()
+        prices = {item['symbol']: float(item['price']) for item in res if item['symbol'].endswith('USDT')}
+
+        for symbol, trade in list(active_trades.items()):
+            if symbol in prices:
+                current_p = prices[symbol]
+                entry_p = trade['entry']
+                target_p = trade['target']
+                stop_p = trade['stop']
+
+                # فحص الهدف (3%)
+                if current_p >= target_p:
+                    msg = f"✅ **تم تحقيق الهدف!**\n💰 العملة: #{symbol.replace('USDT','')}\n📈 الربح: +3.00%\n🚀 السعر الحالي: {current_p:,.4f}"
+                    await bot.send_message(chat_id=CHAT_ID, text=msg)
+                    del active_trades[symbol] # إغلاق المراقبة بعد الهدف
+
+                # فحص الستوب (2%)
+                elif current_p <= stop_p:
+                    msg = f"🛑 **ضرب الستوب لوز!**\n📉 العملة: #{symbol.replace('USDT','')}\n📉 الخسارة: -2.00%\n⚠️ السعر الحالي: {current_p:,.4f}"
+                    await bot.send_message(chat_id=CHAT_ID, text=msg)
+                    del active_trades[symbol] # إغلاق المراقبة بعد الستوب
+    except Exception as e:
+        print(f"Monitor Error: {e}")
 
 async def scout_market():
-    global last_prices
+    global last_prices, active_trades
     try:
-        # جلب البيانات اللحظية من بينانس
         res = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10).json()
         
         for item in res:
@@ -35,31 +53,32 @@ async def scout_market():
                 volume = float(item['quoteVolume'])
                 current_price = float(item['lastPrice'])
                 
-                # التركيز على السيولة الطبيعية (100k - 1.5M) لضمان حركة سكالبينج حقيقية
-                if 100000 <= volume <= 1500000:
+                if volume >= 200000:
                     if symbol in last_prices:
-                        old_price = last_prices[symbol]
-                        change = ((current_price - old_price) / old_price) * 100
+                        change = ((current_price - last_prices[symbol]) / last_prices[symbol]) * 100
                         
-                        # رصد الشمعة الانفجارية (أكثر من 1.2% في 20 ثانية)
-                        if change >= 1.2:
-                            harmonic = get_harmonic_levels(current_price)
+                        if change >= 1.1:
+                            # حساب الهدف والستوب المطلوبين (3% ربح و 2% خسارة)
+                            target = current_price * 1.03
+                            stop = current_price * 0.98
                             
+                            # إضافة العملة للمراقبة اللحظية
+                            active_trades[symbol] = {
+                                'entry': current_price,
+                                'target': target,
+                                'stop': stop
+                            }
+
                             msg = (
-                                f"🦋 **رادار الهارمونيك والسيولة (V4.1):**\n"
+                                f"🚀 **إشارة دخول جديدة ($200k+):**\n"
                                 f"✅ **العملة:** #{symbol.replace('USDT','')}\n"
-                                f"🔥 **حركة الشمعة:** +{change:.2f}%\n"
-                                f"💰 **فوليوم السيولة:** ${volume/1e3:.0f}K\n"
+                                f"⚡️ **القفزة:** +{change:.2f}%\n"
                                 f"━━━━━━━━━━━━━━\n"
-                                f"🎯 **أهداف الهارمونيك (PRZ):**\n"
-                                f"📍 نقطة (Bat/D): {harmonic['d_point']:.4f}\n"
-                                f"📍 هدف (Butterfly): {harmonic['butterfly']:.4f}\n"
-                                f"🚀 امتداد فيبوناتشي: {harmonic['extension']:.4f}\n"
+                                f"📥 **سعر الدخول:** {current_price:,.4f}\n"
+                                f"🎯 **هدف التنبيه (3%):** {target:,.4f}\n"
+                                f"🛑 **ستوب التنبيه (2%):** {stop:,.4f}\n"
                                 f"━━━━━━━━━━━━━━\n"
-                                f"📥 **دخول ماركت:** {current_price:,.4f}\n"
-                                f"🛑 **وقف الخسارة:** {current_price * 0.982:,.4f}\n"
-                                f"━━━━━━━━━━━━━━\n"
-                                f"💡 *التحليل: سيولة عالية + نموذج هارمونيك قيد التكون!*"
+                                f"📢 *سأقوم بتنبيهك فور وصول السعر لأي منهما!*"
                             )
                             await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
                 
@@ -68,18 +87,13 @@ async def scout_market():
         print(f"Scout Error: {e}")
 
 async def main():
-    print("🚀 تشغيل القناص التوافقي...")
-    welcome = (
-        "🦋 **تم تفعيل محرك الهارمونيك والسيولة V4.1**\n\n"
-        "🎯 التركيز: شمعة الانفجار اللحظية\n"
-        "📐 التحليل: PRZ & Fibonacci Ratios\n"
-        "💰 السيولة: $100k - $1.5M"
-    )
-    await bot.send_message(chat_id=CHAT_ID, text=welcome)
+    print("🚀 رادار الصيد والتعقب يعمل...")
+    await bot.send_message(chat_id=CHAT_ID, text="🤖 **نظام V4.4 (التعقب الآلي):**\n\n✅ تنبيهات الدخول ($200k+)\n✅ تتبع الأهداف (3% ربح)\n✅ تتبع الستوب (2% خسارة)")
 
     while True:
-        await scout_market()
-        await asyncio.sleep(20) # فحص كل 20 ثانية لصيد "الهارمونيك" في بدايته
+        await scout_market()        # البحث عن فرص
+        await monitor_active_trades() # مراقبة الأهداف
+        await asyncio.sleep(20)
 
 if __name__ == "__main__":
     asyncio.run(main())
