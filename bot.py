@@ -17,7 +17,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Strict MEXC Bot is Running")
+        self.wfile.write(b"Extreme Strict MEXC Bot is Running")
 
 def run_health_server():
     try:
@@ -26,15 +26,12 @@ def run_health_server():
     except: pass
 
 def get_pro_targets(price):
-    """تحليل رقمي صارم للأهداف"""
-    root = math.sqrt(price)
     return {
-        "target_3pct": price * 1.03,    # هدفك الأساسي
-        "gann_90": (root + 0.5)**2,     # زاوية جان 90 لتأكيد القوة
-        "stop": price * 0.98            # وقف خسارة صارم 2%
+        "target": price * 1.03,
+        "stop": price * 0.98
     }
 
-async def scout_strict():
+async def scout_extreme():
     global last_prices, active_trades
     try:
         url = "https://api.mexc.com/api/v3/ticker/24hr"
@@ -46,29 +43,27 @@ async def scout_strict():
                 vol = float(item['quoteVolume'])
                 current_p = float(item['lastPrice'])
                 
-                # --- الفلتر الصارم ---
-                # 1. السيولة لا تقل عن 500 ألف دولار
-                if vol >= 500000:
+                # --- الفلتر الصارم الأقصى ---
+                # سيولة +1 مليون دولار + انفجار +1.5%
+                if vol >= 1000000: 
                     if sym in last_prices:
                         old_p = last_prices[sym]
                         change = ((current_p - old_p) / old_p) * 100
                         
-                        # 2. قوة الانفجار لا تقل عن 1.2% (شمعة زخم حقيقية)
-                        if change >= 1.2 and sym not in active_trades:
+                        if change >= 1.5 and sym not in active_trades:
                             t = get_pro_targets(current_p)
-                            active_trades[sym] = {'entry': current_p, 'target': t['target_3pct'], 'stop': t['stop']}
+                            active_trades[sym] = {'entry': current_p, 'target': t['target'], 'stop': t['stop']}
                             
-                            msg = (f"🎯 **إشارة صارمة (زخم عالي):**\n"
+                            msg = (f"🛡️ **إشارة حيتان (الوضع الصارم الأقصى):**\n"
                                    f"✅ **العملة:** #{sym.replace('USDT','')}\n"
-                                   f"🔥 قوة الانفجار: +{change:.2f}%\n"
+                                   f"⚡️ قوة الزخم: +{change:.2f}%\n"
                                    f"💰 السيولة: ${vol/1e6:.2f}M\n"
                                    f"━━━━━━━━━━━━━━\n"
-                                   f"📥 دخول: {current_p:,.6f}\n"
-                                   f"🎯 هدف (3%): {t['target_3pct']:,.6f}\n"
-                                   f"📐 زاوية جان 90: {t['gann_90']:,.6f}\n"
+                                   f"📥 دخول ماركت: {current_p:,.6f}\n"
+                                   f"🎯 هدف (3%): {t['target']:,.6f}\n"
                                    f"🛑 ستوب (2%): {t['stop']:,.6f}\n"
                                    f"━━━━━━━━━━━━━━\n"
-                                   f"⚠️ *الحالة: اختراق فني مدعوم بسيولة ضخمة*")
+                                   f"🔥 *نظام الفلترة: صارم جداً*")
                             await bot.send_message(CHAT_ID, msg)
                     
                     last_prices[sym] = current_p
@@ -77,12 +72,12 @@ async def scout_strict():
 
 async def main_loop():
     try:
-        await bot.send_message(CHAT_ID, "⚖️ **تم تفعيل النظام الصارم (V4.7)**\n\n🔹 المنصة: MEXC\n🔹 السيولة: +$500k\n🔹 الانفجار: +1.2%\n📍 الأهداف: 3% ربح / 2% ستوب")
+        await bot.send_message(CHAT_ID, "🛡️ **تم تفعيل الوضع الصارم الأقصى (V4.8)**\n\n⚠️ التنبيهات ستكون قليلة ولكنها عالية الجودة جداً.\n🔹 السيولة: +$1M\n🔹 الانفجار: +1.5%")
     except: pass
 
     while True:
-        await scout_strict()
-        await asyncio.sleep(15) # فحص سريع جداً لصيد اللحظة
+        await scout_extreme()
+        await asyncio.sleep(10) # فحص فائق السرعة كل 10 ثواني
 
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
