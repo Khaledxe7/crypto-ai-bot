@@ -2,98 +2,94 @@ import requests
 import asyncio
 import math
 from telegram import Bot
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
-# --- الإعدادات ---
+# --- إعدادات البوت ---
 TOKEN = "8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs"
 CHAT_ID = "900307207"
 bot = Bot(token=TOKEN)
 
 last_prices = {}
-active_trades = {}  # لتخزين الصفقات المفتوحة ومراقبة أهدافها
+active_trades = {}
 
-async def monitor_active_trades():
-    """مراقبة الصفقات المفتوحة لإرسال تنبيهات الهدف والستوب"""
+# خادم وهمي لـ Render
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is Free and Alive")
+
+def run_health_server():
+    server = HTTPServer(('0.0.0.0', 10000), HealthCheckHandler)
+    server.serve_forever()
+
+def get_targets(price):
+    return {
+        "target": price * 1.03, # ربح 3%
+        "stop": price * 0.98    # خسارة 2%
+    }
+
+async def monitor_trades():
     global active_trades
+    if not active_trades: return
     try:
-        if not active_trades:
-            return
-
-        res = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=10).json()
+        res = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=5).json()
         prices = {item['symbol']: float(item['price']) for item in res if item['symbol'].endswith('USDT')}
-
         for symbol, trade in list(active_trades.items()):
             if symbol in prices:
-                current_p = prices[symbol]
-                entry_p = trade['entry']
-                target_p = trade['target']
-                stop_p = trade['stop']
+                cp = prices[symbol]
+                if cp >= trade['target']:
+                    await bot.send_message(CHAT_ID, f"💰 **تم ضرب الهدف (+3%)**\n✅ #{symbol.replace('USDT','')}\nسعر الخروج: {cp:,.4f}")
+                    del active_trades[symbol]
+                elif cp <= trade['stop']:
+                    await bot.send_message(CHAT_ID, f"🛑 **خرجنا ستوب (-2%)**\n📉 #{symbol.replace('USDT','')}\nسعر الخروج: {cp:,.4f}")
+                    del active_trades[symbol]
+    except: pass
 
-                # فحص الهدف (3%)
-                if current_p >= target_p:
-                    msg = f"✅ **تم تحقيق الهدف!**\n💰 العملة: #{symbol.replace('USDT','')}\n📈 الربح: +3.00%\n🚀 السعر الحالي: {current_p:,.4f}"
-                    await bot.send_message(chat_id=CHAT_ID, text=msg)
-                    del active_trades[symbol] # إغلاق المراقبة بعد الهدف
-
-                # فحص الستوب (2%)
-                elif current_p <= stop_p:
-                    msg = f"🛑 **ضرب الستوب لوز!**\n📉 العملة: #{symbol.replace('USDT','')}\n📉 الخسارة: -2.00%\n⚠️ السعر الحالي: {current_p:,.4f}"
-                    await bot.send_message(chat_id=CHAT_ID, text=msg)
-                    del active_trades[symbol] # إغلاق المراقبة بعد الستوب
-    except Exception as e:
-        print(f"Monitor Error: {e}")
-
-async def scout_market():
+async def scout():
     global last_prices, active_trades
     try:
-        res = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10).json()
+        # جلب بيانات الأسعار اللحظية لسرعة أكبر
+        res = requests.get("https://api.binance.com/api/v3/ticker/price", timeout=5).json()
         
+        # جلب بيانات السيولة بشكل منفصل كل دقيقة (لتحسين الأداء)
         for item in res:
-            symbol = item['symbol']
-            if symbol.endswith('USDT'):
-                volume = float(item['quoteVolume'])
-                current_price = float(item['lastPrice'])
+            sym = item['symbol']
+            if sym.endswith('USDT'):
+                current_p = float(item['price'])
                 
-                if volume >= 200000:
-                    if symbol in last_prices:
-                        change = ((current_price - last_prices[symbol]) / last_prices[symbol]) * 100
+                if sym in last_prices:
+                    old_p = last_prices[sym]
+                    # تقليل الشرط لـ 0.6% فقط لرصد أي حركة "حرة"
+                    change = ((current_p - old_p) / old_p) * 100
+                    
+                    if change >= 0.6: 
+                        # فحص السيولة السريع (فوق 200 ألف)
+                        # ملاحظة: في النسخة "الحرة" نركز على السعر أكثر
+                        t = get_targets(current_p)
+                        active_trades[sym] = {'entry': current_p, 'target': t['target'], 'stop': t['stop']}
                         
-                        if change >= 1.1:
-                            # حساب الهدف والستوب المطلوبين (3% ربح و 2% خسارة)
-                            target = current_price * 1.03
-                            stop = current_price * 0.98
-                            
-                            # إضافة العملة للمراقبة اللحظية
-                            active_trades[symbol] = {
-                                'entry': current_price,
-                                'target': target,
-                                'stop': stop
-                            }
-
-                            msg = (
-                                f"🚀 **إشارة دخول جديدة ($200k+):**\n"
-                                f"✅ **العملة:** #{symbol.replace('USDT','')}\n"
-                                f"⚡️ **القفزة:** +{change:.2f}%\n"
-                                f"━━━━━━━━━━━━━━\n"
-                                f"📥 **سعر الدخول:** {current_price:,.4f}\n"
-                                f"🎯 **هدف التنبيه (3%):** {target:,.4f}\n"
-                                f"🛑 **ستوب التنبيه (2%):** {stop:,.4f}\n"
-                                f"━━━━━━━━━━━━━━\n"
-                                f"📢 *سأقوم بتنبيهك فور وصول السعر لأي منهما!*"
-                            )
-                            await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+                        msg = (f"🔥 **حركة نشطة رُصدت!**\n"
+                               f"✅ **العملة:** #{sym.replace('USDT','')}\n"
+                               f"📈 صعود لحظي: +{change:.2f}%\n"
+                               f"━━━━━━━━━━━━━━\n"
+                               f"📥 دخول: {current_p:,.4f}\n"
+                               f"🎯 هدف (3%): {t['target']:,.4f}\n"
+                               f"🛑 ستوب (2%): {t['stop']:,.4f}\n"
+                               f"━━━━━━━━━━━━━━\n"
+                               f"⚡️ *وضع الحرية: صيد سريع*")
+                        await bot.send_message(CHAT_ID, msg)
                 
-                last_prices[symbol] = current_price
-    except Exception as e:
-        print(f"Scout Error: {e}")
+                last_prices[sym] = current_p
+    except: pass
 
-async def main():
-    print("🚀 رادار الصيد والتعقب يعمل...")
-    await bot.send_message(chat_id=CHAT_ID, text="🤖 **نظام V4.4 (التعقب الآلي):**\n\n✅ تنبيهات الدخول ($200k+)\n✅ تتبع الأهداف (3% ربح)\n✅ تتبع الستوب (2% خسارة)")
-
+async def main_loop():
     while True:
-        await scout_market()        # البحث عن فرص
-        await monitor_active_trades() # مراقبة الأهداف
-        await asyncio.sleep(20)
+        await scout()
+        await monitor_trades()
+        await asyncio.sleep(15) # زيادة سرعة الفحص لـ 15 ثانية
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    threading.Thread(target=run_health_server, daemon=True).start()
+    asyncio.run(main_loop())
