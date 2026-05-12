@@ -3,85 +3,98 @@ import asyncio
 import ccxt
 from telegram import Bot
 
-# --- الإعدادات الأساسية ---
+# --- الإعدادات ---
 TOKEN = "8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs"
 CHAT_ID = "900307207"
 bot = Bot(token=TOKEN)
-exchange = ccxt.binance()
 
-# 1. وظيفة جلب الأخبار العاجلة
+# إعداد Binance مع تجنب مشاكل الاتصال
+exchange = ccxt.binance({
+    'enableRateLimit': True,
+    'options': {'defaultType': 'spot'}
+})
+
 async def fetch_breaking_news():
     try:
-        url = "https://cryptopanic.com/api/v1/posts/?public=true&filter=important"
-        res = requests.get(url, timeout=10).json()
+        # استخدام مصدر بديل ومباشر للأخبار
+        url = "https://cryptopanic.com/api/v1/posts/?public=true"
+        res = requests.get(url, timeout=15).json()
         news_items = []
-        for post in res['results'][:2]: # نأخذ أهم خبرين فقط للتبسيط الآن
+        for post in res.get('results', [])[:3]:
             news_items.append(f"• {post['title']}")
-        return "\n".join(news_items) if news_items else "لا توجد أخبار عاجلة حالياً."
-    except:
-        return "⚠️ تعذر الاتصال بمصدر الأخبار."
+        return "\n".join(news_items) if news_items else "لا توجد أخبار حالياً."
+    except Exception as e:
+        return f"⚠️ عطل مؤقت في جلب الأخبار."
 
-# 2. وظيفة تحليل سيولة السوق (BTC.D & TOTAL3)
 async def analyze_market_liquidity():
     try:
-        data = requests.get("https://api.coingecko.com/api/v3/global").json()['data']
+        data = requests.get("https://api.coingecko.com/api/v3/global", timeout=10).json()['data']
         btc_d = data['market_cap_percentage']['btc']
-        usdt_d = data['market_cap_percentage'].get('usdt', 0)
-        total_mcap = data['total_market_cap']['usd'] / 1e12
+        usdt_d = data['market_cap_percentage'].get('usdt', 6.5) # قيمة افتراضية إذا لم تتوفر
         
-        # تحليل بسيط للوضع
-        status = "🟢 Risk-On (دخول سيولة)" if usdt_d < 4.5 else "🔴 Risk-Off (هروب للكاش)"
-        return f"📊 **سيولة السوق:**\n- استحواذ BTC: {btc_d:.1f}%\n- هيمنة USDT: {usdt_d:.1f}%\n- الوضع: {status}"
+        status = "🟢 Risk-On" if usdt_d < 4.5 else "🔴 Risk-Off"
+        return f"📊 **سيولة السوق:**\n- استحواذ BTC: {btc_d:.1f}%\n- هيمنة USDT: {usdt_d:.1f}%\n- الوضع الحالي: {status}"
     except:
-        return "⚠️ فشل تحليل السيولة."
+        return "⚠️ فشل تحليل السيولة الكلية."
 
-# 3. وظيفة فحص الفرص (السكالبينج)
 async def get_trading_signals():
     try:
+        # جلب الأسعار لافضل 20 عملة من حيث الحجم
         tickers = exchange.fetch_tickers()
-        # نبحث عن عملة صاعدة بفوليوم جيد
-        movers = [s for s in tickers if '/USDT' in s and tickers[s]['percentage'] > 5]
-        if not movers: return "🔎 لا توجد فرص واضحة حالياً."
+        # نفلتر العملات الصاعدة التي فيها سيولة
+        movers = []
+        for symbol, ticker in tickers.items():
+            if '/USDT' in symbol and ticker['percentage'] is not None:
+                if ticker['percentage'] > 3: # صعود أكثر من 3%
+                    movers.append((symbol, ticker))
         
-        best_coin = movers[0] # نأخذ أقوى عملة صاعدة
-        price = tickers[best_coin]['last']
-        target = price * 1.03 # هدف 3%
-        stop = price * 0.97   # ستوب 3%
+        if not movers:
+            return "🔎 السوق مستقر، لا توجد عملات مندفعة سيولياً."
         
-        return (f"🚀 **إشارة تداول مقترحة: {best_coin}**\n"
-                f"💰 السعر الحالي: {price}\n"
-                f"🎯 الهدف: {target:.4f}\n"
-                f"🛑 الستوب: {stop:.4f}")
-    except:
-        return "⚠️ فشل محرك التداول."
+        # ترتيب حسب الأعلى صعوداً
+        movers.sort(key=lambda x: x[1]['percentage'], reverse=True)
+        top_coin, data = movers[0]
+        
+        price = data['last']
+        change = data['percentage']
+        target = price * 1.03
+        stop = price * 0.97
+        
+        return (f"🚀 **إشارة سيولة: {top_coin}**\n"
+                f"📈 التغير: +{change:.1f}%\n"
+                f"💰 السعر: {price}\n"
+                f"🎯 الهدف (3%): {target:.4f}\n"
+                f"🛑 الستوب: {stop:.4f}\n"
+                f"🔗 [شارت 5د](https://www.tradingview.com/chart/?symbol=BINANCE:{top_coin.replace('/', '')})")
+    except Exception as e:
+        print(f"Error in trading engine: {e}")
+        return "⚠️ محرك التداول قيد التحديث."
 
 async def main():
-    print("🛠️ جاري تشغيل المرحلة الأولى من النظام...")
+    print("🛠️ تشغيل النظام المطور...")
     while True:
-        # جمع البيانات من كل المحركات
-        news = await fetch_breaking_news()
         liquidity = await analyze_market_liquidity()
+        news = await fetch_breaking_news()
         signal = await get_trading_signals()
         
         report = (
-            f"🧠 **نظام الاستخبارات (المرحلة 1)**\n"
+            f"🧠 **نظام الاستخبارات (المرحلة 1.1)**\n"
             f"━━━━━━━━━━━━━━\n"
             f"{liquidity}\n"
             f"━━━━━━━━━━━━━━\n"
-            f"📰 **أهم الأخبار:**\n{news}\n"
+            f"📰 **آخر المستجدات:**\n{news}\n"
             f"━━━━━━━━━━━━━━\n"
             f"{signal}\n"
             f"━━━━━━━━━━━━━━\n"
-            f"⏰ التحديث القادم بعد ساعة"
+            f"⚡ يتم الفحص كل 30 دقيقة"
         )
         
         try:
-            await bot.send_message(chat_id=CHAT_ID, text=report, parse_mode='Markdown')
-            print("✅ أرسل النظام تقريره الأول.")
+            await bot.send_message(chat_id=CHAT_ID, text=report, parse_mode='Markdown', disable_web_page_preview=True)
         except Exception as e:
-            print(f"❌ خطأ: {e}")
+            print(f"Send Error: {e}")
             
-        await asyncio.sleep(3600) # تحديث كل ساعة
+        await asyncio.sleep(1800) # فحص كل 30 دقيقة لاقتناص الفرص أسرع
 
 if __name__ == "__main__":
     asyncio.run(main())
