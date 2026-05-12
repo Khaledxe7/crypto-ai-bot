@@ -1,6 +1,7 @@
 import requests
 import asyncio
 import feedparser
+import json
 from telegram import Bot
 
 # --- الإعدادات ---
@@ -8,69 +9,87 @@ TOKEN = "8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs"
 CHAT_ID = "900307207"
 bot = Bot(token=TOKEN)
 
-def get_price_backup(symbol):
-    """جلب السعر بدون مكتبات ثقيلة (عبر API مباشر) لتجنب الحظر"""
+def get_tv_price(symbol):
+    """جلب السعر من محرك TradingView العام"""
     try:
-        sym = symbol.replace('/', '')
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={sym}", timeout=5).json()
-        return float(res['price'])
+        # محاكاة طلب من شارت تريدنج فيو
+        url = f"https://scanner.tradingview.com/crypto/scan"
+        payload = {
+            "symbols": {"tickers": [f"BINANCE:{symbol}"]},
+            "columns": ["lp", "change", "volume"]
+        }
+        res = requests.post(url, json=payload, timeout=10).json()
+        data = res['data'][0]['d']
+        return {
+            "price": data[0],
+            "change": data[1],
+            "vol": data[2]
+        }
     except:
+        # حل احتياطي إذا فشل التيكر الخاص
         try:
-            # مصدر احتياطي ثاني (CoinGecko)
-            res = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd").json()
-            return res[symbol.lower()]['usd']
+            res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=5).json()
+            return {"price": float(res['price']), "change": 0, "vol": 0}
         except: return None
 
-async def fetch_news_rss():
+async def fetch_global_news():
+    """رادار الأخبار من كبار المصادر (Cointelegraph & News)"""
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
-        news_items = []
+        news = []
         for entry in feed.entries[:3]:
             title = entry.title
-            sentiment = "🐂 Bull" if any(w in title.lower() for w in ['up', 'gain', 'high', 'buy', 'etf', 'bull', 'rally']) else "🐻 Bear" if any(w in title.lower() for w in ['down', 'fall', 'low', 'sell', 'hack', 'crash', 'drop']) else "⚖️ Neu"
-            news_items.append(f"• {title} **[{sentiment}]**")
-        return "\n".join(news_items)
-    except: return "⚠️ عطل في محرك الأخبار."
+            # ذكاء اصطناعي بسيط لتحليل الكلمات المفتاحية
+            impact = "🔥 عالي" if any(x in title.lower() for x in ['sec', 'fed', 'etf', 'war', 'crash', 'huge']) else "⚡ متوسط"
+            news.append(f"• {title} [تأثير: {impact}]")
+        return "\n".join(news)
+    except: return "⚠️ جاري تحديث رادار الأخبار..."
 
-async def get_market_status():
+async def market_sentiment():
+    """تحليل استحواذ البيتكوين والسيولة"""
     try:
         res = requests.get("https://api.coinlore.net/api/global/", timeout=10).json()[0]
-        # إضافة لمسة تحليل ذكي
-        btcd = float(res['btc_d'])
-        status = "🔴 Risk-Off (السيولة في البيتكوين فقط)" if btcd > 55 else "🟢 Altseason Potential"
-        return f"📊 **هيكل السوق:**\n- استحواذ BTC: {btcd}%\n- الحالة: {status}"
-    except: return "📊 جاري تحديث بيانات السوق..."
+        btcd = res['btc_d']
+        # ربط الاستحواذ بالقرار
+        advice = "💰 وقت العملات البديلة" if float(btcd) < 52 else "₿ البيتكوين يقود السوق"
+        return f"📊 **هيكل السيولة:**\n- استحواذ BTC: {btcd}%\n- التوجه: {advice}"
+    except: return "📊 جاري تحليل السيولة..."
 
 async def main():
-    print("🚀 نظام الاستخبارات 1.4 ينطلق...")
+    print("🚀 نظام استخبارات TradingView انطلق...")
     while True:
-        # جلب الأسعار يدوياً لتجنب حظر CCXT
-        btc_p = get_price_backup("BTCUSDT")
-        sol_p = get_price_backup("SOLUSDT")
-        
-        signal_text = "🔎 جاري فحص السيولة..."
-        if btc_p and sol_p:
-            signal_text = (f"🚨 **BTC/USDT**: {btc_p}$\n"
-                           f"🚨 **SOL/USDT**: {sol_p}$\n"
-                           f"💡 *نصيحة:* إذا BTC فوق 65k و BTC.D ينخفض، ابدأ LONG عملات بديلة.")
+        # جلب بيانات أهم العملات من محرك تريدنج فيو
+        btc = get_tv_price("BTCUSDT")
+        sol = get_tv_price("SOLUSDT")
+        eth = get_tv_price("ETHUSDT")
+
+        prices_text = "⚡ **الأسعار والزخم (TradingView):**\n"
+        if btc:
+            prices_text += f"₿ BTC: ${btc['price']:,.0f} ({btc['change']:.2f}%)\n"
+        if sol:
+            prices_text += f"☀️ SOL: ${sol['price']:.2f} ({sol['change']:.2f}%)\n"
+        if eth:
+            prices_text += f"💎 ETH: ${eth['price']:,.0f} ({eth['change']:.2f}%)\n"
 
         report = (
-            f"🧠 **نظام الاستخبارات (AI - المرحلة 1.4)**\n"
+            f"🧠 **نظام الاستخبارات (المرحلة 1.5)**\n"
             f"━━━━━━━━━━━━━━\n"
-            f"{await get_market_status()}\n"
+            f"{await market_sentiment()}\n"
             f"━━━━━━━━━━━━━━\n"
-            f"🌍 **أخبار الكريبتو والجيوسياسة:**\n{await fetch_news_rss()}\n"
+            f"🌍 **أهم المستجدات العالمية:**\n{await fetch_global_news()}\n"
             f"━━━━━━━━━━━━━━\n"
-            f"⚡ **الأسعار والسيولة اللحظية:**\n{signal_text}\n"
+            f"{prices_text}\n"
             f"━━━━━━━━━━━━━━\n"
-            f"⚠️ **إدارة مخاطر:** وقف الخسارة مقدس.\n"
+            f"📢 **توصية النظام:** {'إغلاق صفقات (Risk-Off)' if btc and btc['change'] < -2 else 'بحث عن فرص (Scalping)'}\n"
             f"⏰ تحديث كل 15 دقيقة"
         )
-        
+
         try:
             await bot.send_message(chat_id=CHAT_ID, text=report, parse_mode='Markdown')
-        except: pass
-        
+            print("✅ التقرير أُرسل بنجاح.")
+        except Exception as e:
+            print(f"❌ خطأ إرسال: {e}")
+
         await asyncio.sleep(900)
 
 if __name__ == "__main__":
