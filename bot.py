@@ -26,13 +26,11 @@ PORT = int(os.getenv("PORT", 10000))
 
 # إعدادات التداول
 CONFIG = {
-    "min_volume_usdt": 500_000,
-    "min_volume_spike": 1.2,
-    "min_score": 40,
-    "cooldown_minutes": 5,
-    "atr_multiplier_tp1": 1.2,
-    "atr_multiplier_tp2": 2.2,
-    "atr_multiplier_sl": 1.2,
+    "min_volume_usdt": 2_000_000,   # سيولة عالية (مليونين)
+    "min_volume_spike": 1.8,        # حجم مضاعف قوي
+    "min_score": 85,                # درجة عالية جداً
+    "cooldown_minutes": 30,         # راحة بين الإشارات
+    ...
 }
 
 # ========== إرسال رسالة إلى تليجرام ==========
