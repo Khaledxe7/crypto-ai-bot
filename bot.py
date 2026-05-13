@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-بوت سكالبينغ - يعمل كـ Background Worker على Render
+بوت سكالبينغ - يعمل على Render Background Worker (بدون JobQueue)
 """
 
 import os
@@ -14,11 +14,10 @@ from datetime import datetime
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ========== الإعدادات (ضع التوكن و CHAT_ID مباشرة) ==========
+# ========== الإعدادات ==========
 TOKEN = "8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs"
 CHAT_ID = "900307207"
 
-# إعدادات التداول (خفيفة لظهور إشارات سريعة)
 CONFIG = {
     "min_volume_usdt": 500_000,
     "min_volume_spike": 1.2,
@@ -29,7 +28,7 @@ CONFIG = {
     "atr_multiplier_sl": 1.2,
 }
 
-# ========== المؤشرات الفنية ==========
+# ========== المؤشرات الفنية (بدون pandas-ta) ==========
 def compute_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
@@ -80,7 +79,6 @@ def calculate_score(df):
         score += 15
     return min(100, score)
 
-# قائمة العملات (أفضل 10 للاختبار)
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT"
@@ -161,29 +159,35 @@ async def manual_scan(update: Update, ctx):
 async def status(update: Update, ctx):
     await update.message.reply_text(f"📊 صفقات مفتوحة: {len(active_trades)}")
 
+# ========== حلقة الفحص التلقائي (بدون JobQueue) ==========
+async def periodic_scan():
+    """يعمل كل 30 دقيقة بشكل مستقل"""
+    while True:
+        await asyncio.sleep(1800)  # 30 دقيقة
+        await scan_market()
+
 # ========== التشغيل الرئيسي ==========
 async def main():
-    # إرسال رسالة فورية فور بدء التشغيل (الأهم)
-    await bot.send_message(chat_id=CHAT_ID, text="✅ *البوت يعمل الآن على Render (Background Worker)*\nأرسل /test للتأكد، و /scan لبدء الفحص.", parse_mode='Markdown')
+    # 1. إرسال رسالة بدء التشغيل فوراً
+    await bot.send_message(chat_id=CHAT_ID, text="✅ *البوت يعمل الآن على Render (Background Worker - نسخة معدلة)*\nأرسل /test للتأكد، و /scan لبدء الفحص.", parse_mode='Markdown')
     
-    # تشغيل متابعة الصفقات
+    # 2. بدء المهام الخلفية
     asyncio.create_task(monitor_trades())
+    asyncio.create_task(periodic_scan())  # الفحص التلقائي بدون JobQueue
     
-    # بناء تطبيق التليجرام
+    # 3. بناء تطبيق التليجرام (بدون JobQueue)
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
     app.add_handler(CommandHandler("scan", manual_scan))
     app.add_handler(CommandHandler("status", status))
     
-    # جدولة فحص تلقائي كل 30 دقيقة
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeating(lambda _: asyncio.create_task(scan_market()), interval=1800, first=10)
-    
+    # 4. بدء استقبال الأوامر
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+    
+    # 5. الإبقاء على التشغيل
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
