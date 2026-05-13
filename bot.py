@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-بوت سكالبينغ متكامل - يعمل على Render Background Worker
+بوت سكالبينغ متكامل - يعمل على Render بدون مشاكل
+يستخدم requests فقط لإرسال الإشعارات
 """
 
 import os
+import time
+import json
 import asyncio
 import logging
 import requests
@@ -13,14 +16,15 @@ import numpy as np
 import feedparser
 import yfinance as yf
 from datetime import datetime
-from telegram import Bot, Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
 # ========== إعداداتك ==========
 TOKEN = "8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs"
 CHAT_ID = "900307207"
+PORT = int(os.getenv("PORT", 10000))
 
-# إعدادات التداول (خفيفة حالياً، يمكنك تشديدها لاحقاً)
+# إعدادات التداول
 CONFIG = {
     "min_volume_usdt": 500_000,
     "min_volume_spike": 1.2,
@@ -31,7 +35,25 @@ CONFIG = {
     "atr_multiplier_sl": 1.2,
 }
 
-# ========== دوال المؤشرات (بدون pandas-ta) ==========
+# ========== إرسال رسالة إلى تليجرام ==========
+def send_telegram(message):
+    """إرسال رسالة عبر API المباشر لتليجرام"""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("✅ تم إرسال الرسالة")
+        else:
+            print(f"❌ فشل الإرسال: {response.text}")
+    except Exception as e:
+        print(f"❌ خطأ في الإرسال: {e}")
+
+# ========== دوال المؤشرات الفنية ==========
 def compute_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
@@ -88,11 +110,11 @@ def get_top_100_coins():
         url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false"
         data = requests.get(url, timeout=15).json()
         symbols = [item['symbol'].upper() + 'USDT' for item in data if item['symbol'].isalpha()]
-        return symbols[:50]  # خذ أول 50 لتسريع الفحص
+        return symbols[:50]
     except:
         return ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","DOTUSDT","LINKUSDT"]
 
-# ========== البيانات الكلية (ذهب، دولار، تضخم) ==========
+# ========== البيانات الكلية ==========
 def get_macro():
     try:
         dxy = yf.Ticker("DX-Y.NYB")
@@ -101,11 +123,9 @@ def get_macro():
         gold = yf.Ticker("GC=F")
         gold_data = gold.history(period="1d")
         gold_price = round(gold_data['Close'].iloc[-1], 2) if not gold_data.empty else 2350.0
-        inflation = 3.2
-        interest = 3.5
-        return {"dollar": dollar, "gold": gold_price, "inflation": inflation, "interest": interest}
+        return {"dollar": dollar, "gold": gold_price}
     except:
-        return {"dollar": 98.5, "gold": 2350.0, "inflation": 3.2, "interest": 3.5}
+        return {"dollar": 98.5, "gold": 2350.0}
 
 # ========== الأخبار العالمية ==========
 def get_news():
@@ -124,16 +144,12 @@ def get_news():
         pass
     return alerts
 
-# ========== متغيرات عامة ==========
-TOP_SYMBOLS = get_top_100_coins()
+# ========== إدارة الصفقات ==========
 active_trades = {}
-bot = Bot(token=TOKEN)
-logging.basicConfig(level=logging.INFO)
 
-# ========== إرسال الإشارة ==========
-async def send_signal(symbol, entry, tp1, tp2, sl, score, macro, news):
+def send_signal(symbol, entry, tp1, tp2, sl, score, macro, news):
     msg = (
-        f"🚀 *إشارة سكالبينغ متطورة* 🚀\n\n"
+        f"🚀 *إشارة سكالبينغ* 🚀\n\n"
         f"💎 {symbol}\n"
         f"🤖 AI Score: {score}/100\n"
         f"💰 الدخول: {entry:.4f}\n"
@@ -141,18 +157,16 @@ async def send_signal(symbol, entry, tp1, tp2, sl, score, macro, news):
         f"🎯 TP2: {tp2:.4f} (+{(tp2/entry-1)*100:.2f}%)\n"
         f"🛑 SL: {sl:.4f} (-{(1-sl/entry)*100:.2f}%)\n"
         f"💵 الدولار: {macro['dollar']} | 🥇 الذهب: ${macro['gold']}\n"
-        f"📈 تضخم: {macro['inflation']}% | فائدة: {macro['interest']}%\n"
         f"📰 ترامب: {news['trump'][:50]}\n"
         f"📰 ماسك: {news['musk'][:50]}\n"
-        f"⚔️ حروب: {news['war'][:50]}\n"
-        f"⚠️ المخاطرة: 1%"
+        f"⚔️ حروب: {news['war'][:50]}"
     )
-    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+    send_telegram(msg)
     active_trades[symbol] = {"entry": entry, "tp1": tp1, "tp2": tp2, "sl": sl, "open_time": datetime.now()}
 
-# ========== فحص السوق ==========
-async def scan_market():
-    logging.info("بدء فحص السوق...")
+def scan_market():
+    print(f"[{datetime.now()}] بدء فحص السوق...")
+    TOP_SYMBOLS = get_top_100_coins()
     macro = get_macro()
     news = get_news()
     for sym in TOP_SYMBOLS[:30]:
@@ -168,15 +182,14 @@ async def scan_market():
                 tp1 = entry + atr * CONFIG['atr_multiplier_tp1']
                 tp2 = entry + atr * CONFIG['atr_multiplier_tp2']
                 sl = entry - atr * CONFIG['atr_multiplier_sl']
-                await send_signal(sym, entry, tp1, tp2, sl, score, macro, news)
-                await asyncio.sleep(CONFIG['cooldown_minutes'] * 60)
-                break  # أرسل إشارة واحدة ثم توقف
+                send_signal(sym, entry, tp1, tp2, sl, score, macro, news)
+                time.sleep(CONFIG['cooldown_minutes'] * 60)
+                break
         except Exception as e:
-            logging.error(f"خطأ في {sym}: {e}")
-    logging.info("انتهى الفحص.")
+            print(f"خطأ في {sym}: {e}")
+    print(f"[{datetime.now()}] انتهى الفحص.")
 
-# ========== متابعة الصفقات ==========
-async def monitor_trades():
+def monitor_trades():
     while True:
         for sym, trade in list(active_trades.items()):
             try:
@@ -187,67 +200,54 @@ async def monitor_trades():
                 profit = (price - trade['entry']) / trade['entry']
                 if price >= trade['tp2'] and not trade.get('closed'):
                     trade['closed'] = True
-                    await bot.send_message(chat_id=CHAT_ID, text=f"🏆 {sym} حقق TP2! الربح: {profit*100:.2f}%")
+                    send_telegram(f"🏆 {sym} حقق TP2! الربح: {profit*100:.2f}%")
                     del active_trades[sym]
                 elif price <= trade['sl'] and not trade.get('closed'):
                     trade['closed'] = True
                     loss = (trade['entry']-price)/trade['entry']*100
-                    await bot.send_message(chat_id=CHAT_ID, text=f"🛑 {sym} ضرب الستوب! الخسارة: {loss:.2f}%")
+                    send_telegram(f"🛑 {sym} ضرب الستوب! الخسارة: {loss:.2f}%")
                     del active_trades[sym]
                 elif price >= trade['tp1'] and not trade.get('tp1_hit'):
                     trade['tp1_hit'] = True
-                    await bot.send_message(chat_id=CHAT_ID, text=f"🎯 {sym} حقق TP1 (+{profit*100:.2f}%)")
+                    send_telegram(f"🎯 {sym} حقق TP1 (+{profit*100:.2f}%)")
             except:
                 pass
-        await asyncio.sleep(10)
+        time.sleep(10)
 
-# ========== الفحص الدوري التلقائي ==========
-async def periodic_scan():
+def periodic_scan():
     while True:
-        await asyncio.sleep(1800)  # 30 دقيقة
-        await scan_market()
+        time.sleep(1800)  # 30 دقيقة
+        scan_market()
 
-# ========== أوامر التليجرام ==========
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("✅ بوت السكالبينغ المتطور يعمل. أرسل /scan لفحص يدوي، /test لاختبار الإرسال.")
+# ========== خادم الصحة ==========
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+def run_health():
+    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
+    server.serve_forever()
 
-def test(update: Update, context: CallbackContext):
-    update.message.reply_text("🔔 البوت متصل ويعمل بشكل صحيح.")
-
-def manual_scan(update: Update, context: CallbackContext):
-    update.message.reply_text("🔄 جاري فحص السوق...")
-    import asyncio
-    asyncio.create_task(scan_market())
-
-def status(update: Update, context: CallbackContext):
-    update.message.reply_text(f"📊 صفقات مفتوحة: {len(active_trades)} | العملات المتاحة: {len(TOP_SYMBOLS)}")
-
-# ========== التشغيل الرئيسي (باستخدام Updater القديم) ==========
+# ========== التشغيل الرئيسي ==========
 def main():
-    # إرسال رسالة بدء التشغيل (باستخدام requests لتجنب async)
-    import requests as req
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    req.post(url, json={"chat_id": CHAT_ID, "text": "✅ *البوت يعمل الآن (نسخة مستقرة)*\nأرسل /test للتأكد.", "parse_mode": "Markdown"})
+    # بدء خادم الصحة
+    threading.Thread(target=run_health, daemon=True).start()
     
-    # بدء المهام الخلفية
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(monitor_trades())
-    loop.create_task(periodic_scan())
+    # إرسال رسالة بدء التشغيل
+    send_telegram("✅ *البوت يعمل الآن (النسخة النهائية)*\nسيرسل إشارات عند العثور على فرص. سيتم الفحص التلقائي كل 30 دقيقة.")
     
-    # إعداد Updater (الطريقة القديمة الأكثر استقراراً)
-    updater = Updater(token=TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("test", test))
-    dp.add_handler(CommandHandler("scan", manual_scan))
-    dp.add_handler(CommandHandler("status", status))
+    # بدء المهام
+    threading.Thread(target=monitor_trades, daemon=True).start()
+    threading.Thread(target=periodic_scan, daemon=True).start()
     
-    # بدء الاستماع للأوامر
-    updater.start_polling()
+    # فحص أولي فوراً
+    scan_market()
+    
+    # الإبقاء على التشغيل
     print("البوت يعمل...")
-    # تشغيل حلقة asyncio
-    loop.run_forever()
+    while True:
+        time.sleep(60)
 
 if __name__ == "__main__":
     main()
