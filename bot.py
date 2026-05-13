@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-بوت سكالبينغ - يعمل على Render Background Worker (بدون JobQueue)
+بوت سكالبينغ متكامل - يعمل على Render Background Worker
 """
 
 import os
@@ -10,14 +10,17 @@ import logging
 import requests
 import pandas as pd
 import numpy as np
+import feedparser
+import yfinance as yf
 from datetime import datetime
 from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Updater, CommandHandler, CallbackContext
 
-# ========== الإعدادات ==========
+# ========== إعداداتك ==========
 TOKEN = "8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs"
 CHAT_ID = "900307207"
 
+# إعدادات التداول (خفيفة حالياً، يمكنك تشديدها لاحقاً)
 CONFIG = {
     "min_volume_usdt": 500_000,
     "min_volume_spike": 1.2,
@@ -28,7 +31,7 @@ CONFIG = {
     "atr_multiplier_sl": 1.2,
 }
 
-# ========== المؤشرات الفنية (بدون pandas-ta) ==========
+# ========== دوال المؤشرات (بدون pandas-ta) ==========
 def compute_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
@@ -79,48 +82,100 @@ def calculate_score(df):
         score += 15
     return min(100, score)
 
-SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT"
-]
+# ========== أفضل 100 عملة ==========
+def get_top_100_coins():
+    try:
+        url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false"
+        data = requests.get(url, timeout=15).json()
+        symbols = [item['symbol'].upper() + 'USDT' for item in data if item['symbol'].isalpha()]
+        return symbols[:50]  # خذ أول 50 لتسريع الفحص
+    except:
+        return ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","DOTUSDT","LINKUSDT"]
 
+# ========== البيانات الكلية (ذهب، دولار، تضخم) ==========
+def get_macro():
+    try:
+        dxy = yf.Ticker("DX-Y.NYB")
+        dxy_data = dxy.history(period="1d")
+        dollar = round(dxy_data['Close'].iloc[-1], 2) if not dxy_data.empty else 98.5
+        gold = yf.Ticker("GC=F")
+        gold_data = gold.history(period="1d")
+        gold_price = round(gold_data['Close'].iloc[-1], 2) if not gold_data.empty else 2350.0
+        inflation = 3.2
+        interest = 3.5
+        return {"dollar": dollar, "gold": gold_price, "inflation": inflation, "interest": interest}
+    except:
+        return {"dollar": 98.5, "gold": 2350.0, "inflation": 3.2, "interest": 3.5}
+
+# ========== الأخبار العالمية ==========
+def get_news():
+    alerts = {"trump": "", "musk": "", "war": ""}
+    try:
+        feed = feedparser.parse("https://www.reuters.com/world/rss")
+        for entry in feed.entries[:10]:
+            title = entry.title.lower()
+            if "trump" in title:
+                alerts["trump"] = title[:80]
+            if "elon" in title or "musk" in title:
+                alerts["musk"] = title[:80]
+            if any(w in title for w in ["taiwan", "hormuz", "iran", "china", "war"]):
+                alerts["war"] = title[:80]
+    except:
+        pass
+    return alerts
+
+# ========== متغيرات عامة ==========
+TOP_SYMBOLS = get_top_100_coins()
 active_trades = {}
 bot = Bot(token=TOKEN)
 logging.basicConfig(level=logging.INFO)
 
-async def send_signal(symbol, entry, tp1, tp2, sl, score):
+# ========== إرسال الإشارة ==========
+async def send_signal(symbol, entry, tp1, tp2, sl, score, macro, news):
     msg = (
-        f"🚀 *إشارة سكالبينغ* 🚀\n\n"
+        f"🚀 *إشارة سكالبينغ متطورة* 🚀\n\n"
         f"💎 {symbol}\n"
         f"🤖 AI Score: {score}/100\n"
         f"💰 الدخول: {entry:.4f}\n"
         f"🎯 TP1: {tp1:.4f} (+{(tp1/entry-1)*100:.2f}%)\n"
         f"🎯 TP2: {tp2:.4f} (+{(tp2/entry-1)*100:.2f}%)\n"
         f"🛑 SL: {sl:.4f} (-{(1-sl/entry)*100:.2f}%)\n"
-        f"⚡️ *إدارة المخاطرة: 1%*"
+        f"💵 الدولار: {macro['dollar']} | 🥇 الذهب: ${macro['gold']}\n"
+        f"📈 تضخم: {macro['inflation']}% | فائدة: {macro['interest']}%\n"
+        f"📰 ترامب: {news['trump'][:50]}\n"
+        f"📰 ماسك: {news['musk'][:50]}\n"
+        f"⚔️ حروب: {news['war'][:50]}\n"
+        f"⚠️ المخاطرة: 1%"
     )
     await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
     active_trades[symbol] = {"entry": entry, "tp1": tp1, "tp2": tp2, "sl": sl, "open_time": datetime.now()}
 
+# ========== فحص السوق ==========
 async def scan_market():
     logging.info("بدء فحص السوق...")
-    for sym in SYMBOLS:
-        df = get_binance_data(sym)
-        if df.empty:
-            continue
-        score = calculate_score(df)
-        if score >= CONFIG['min_score']:
-            last = df.iloc[-1]
-            entry = last['close']
-            atr = last['atr']
-            tp1 = entry + atr * CONFIG['atr_multiplier_tp1']
-            tp2 = entry + atr * CONFIG['atr_multiplier_tp2']
-            sl = entry - atr * CONFIG['atr_multiplier_sl']
-            await send_signal(sym, entry, tp1, tp2, sl, score)
-            await asyncio.sleep(CONFIG['cooldown_minutes'] * 60)
-            break
+    macro = get_macro()
+    news = get_news()
+    for sym in TOP_SYMBOLS[:30]:
+        try:
+            df = get_binance_data(sym)
+            if df.empty:
+                continue
+            score = calculate_score(df)
+            if score >= CONFIG['min_score']:
+                last = df.iloc[-1]
+                entry = last['close']
+                atr = last['atr']
+                tp1 = entry + atr * CONFIG['atr_multiplier_tp1']
+                tp2 = entry + atr * CONFIG['atr_multiplier_tp2']
+                sl = entry - atr * CONFIG['atr_multiplier_sl']
+                await send_signal(sym, entry, tp1, tp2, sl, score, macro, news)
+                await asyncio.sleep(CONFIG['cooldown_minutes'] * 60)
+                break  # أرسل إشارة واحدة ثم توقف
+        except Exception as e:
+            logging.error(f"خطأ في {sym}: {e}")
     logging.info("انتهى الفحص.")
 
+# ========== متابعة الصفقات ==========
 async def monitor_trades():
     while True:
         for sym, trade in list(active_trades.items()):
@@ -132,63 +187,67 @@ async def monitor_trades():
                 profit = (price - trade['entry']) / trade['entry']
                 if price >= trade['tp2'] and not trade.get('closed'):
                     trade['closed'] = True
-                    await bot.send_message(chat_id=CHAT_ID, text=f"🏆 {sym} حقق الهدف الثاني! الربح: {profit*100:.2f}%")
+                    await bot.send_message(chat_id=CHAT_ID, text=f"🏆 {sym} حقق TP2! الربح: {profit*100:.2f}%")
                     del active_trades[sym]
                 elif price <= trade['sl'] and not trade.get('closed'):
                     trade['closed'] = True
-                    await bot.send_message(chat_id=CHAT_ID, text=f"🛑 {sym} ضرب الستوب! الخسارة: {(trade['entry']-price)/trade['entry']*100:.2f}%")
+                    loss = (trade['entry']-price)/trade['entry']*100
+                    await bot.send_message(chat_id=CHAT_ID, text=f"🛑 {sym} ضرب الستوب! الخسارة: {loss:.2f}%")
                     del active_trades[sym]
                 elif price >= trade['tp1'] and not trade.get('tp1_hit'):
                     trade['tp1_hit'] = True
-                    await bot.send_message(chat_id=CHAT_ID, text=f"🎯 {sym} حقق الهدف الأول (+{profit*100:.2f}%)")
-            except Exception as e:
-                logging.error(f"خطأ بمتابعة {sym}: {e}")
+                    await bot.send_message(chat_id=CHAT_ID, text=f"🎯 {sym} حقق TP1 (+{profit*100:.2f}%)")
+            except:
+                pass
         await asyncio.sleep(10)
 
-# ========== أوامر التليجرام ==========
-async def start(update: Update, ctx):
-    await update.message.reply_text("✅ بوت السكالبينغ يعمل. أرسل /scan لفحص يدوي، /test لاختبار الإرسال.")
-
-async def test(update: Update, ctx):
-    await update.message.reply_text("🔔 رسالة اختبار: البوت متصل ويعمل بشكل صحيح.")
-
-async def manual_scan(update: Update, ctx):
-    await update.message.reply_text("🔄 جاري فحص السوق...")
-    await scan_market()
-
-async def status(update: Update, ctx):
-    await update.message.reply_text(f"📊 صفقات مفتوحة: {len(active_trades)}")
-
-# ========== حلقة الفحص التلقائي (بدون JobQueue) ==========
+# ========== الفحص الدوري التلقائي ==========
 async def periodic_scan():
-    """يعمل كل 30 دقيقة بشكل مستقل"""
     while True:
         await asyncio.sleep(1800)  # 30 دقيقة
         await scan_market()
 
-# ========== التشغيل الرئيسي ==========
-async def main():
-    # 1. إرسال رسالة بدء التشغيل فوراً
-    await bot.send_message(chat_id=CHAT_ID, text="✅ *البوت يعمل الآن على Render (Background Worker - نسخة معدلة)*\nأرسل /test للتأكد، و /scan لبدء الفحص.", parse_mode='Markdown')
+# ========== أوامر التليجرام ==========
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("✅ بوت السكالبينغ المتطور يعمل. أرسل /scan لفحص يدوي، /test لاختبار الإرسال.")
+
+def test(update: Update, context: CallbackContext):
+    update.message.reply_text("🔔 البوت متصل ويعمل بشكل صحيح.")
+
+def manual_scan(update: Update, context: CallbackContext):
+    update.message.reply_text("🔄 جاري فحص السوق...")
+    import asyncio
+    asyncio.create_task(scan_market())
+
+def status(update: Update, context: CallbackContext):
+    update.message.reply_text(f"📊 صفقات مفتوحة: {len(active_trades)} | العملات المتاحة: {len(TOP_SYMBOLS)}")
+
+# ========== التشغيل الرئيسي (باستخدام Updater القديم) ==========
+def main():
+    # إرسال رسالة بدء التشغيل (باستخدام requests لتجنب async)
+    import requests as req
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    req.post(url, json={"chat_id": CHAT_ID, "text": "✅ *البوت يعمل الآن (نسخة مستقرة)*\nأرسل /test للتأكد.", "parse_mode": "Markdown"})
     
-    # 2. بدء المهام الخلفية
-    asyncio.create_task(monitor_trades())
-    asyncio.create_task(periodic_scan())  # الفحص التلقائي بدون JobQueue
+    # بدء المهام الخلفية
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(monitor_trades())
+    loop.create_task(periodic_scan())
     
-    # 3. بناء تطبيق التليجرام (بدون JobQueue)
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("test", test))
-    app.add_handler(CommandHandler("scan", manual_scan))
-    app.add_handler(CommandHandler("status", status))
+    # إعداد Updater (الطريقة القديمة الأكثر استقراراً)
+    updater = Updater(token=TOKEN, use_context=True)
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("test", test))
+    dp.add_handler(CommandHandler("scan", manual_scan))
+    dp.add_handler(CommandHandler("status", status))
     
-    # 4. بدء استقبال الأوامر
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
-    # 5. الإبقاء على التشغيل
-    await asyncio.Event().wait()
+    # بدء الاستماع للأوامر
+    updater.start_polling()
+    print("البوت يعمل...")
+    # تشغيل حلقة asyncio
+    loop.run_forever()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
