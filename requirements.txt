@@ -1,4 +1,6 @@
-python-telegram-bot==20.7
+python-telegram-bot==13.15  # إصدار أقدم وأكثر استقراراً مع Updater القديم
 requests
 pandas
 numpy
+feedparser
+yfinance
