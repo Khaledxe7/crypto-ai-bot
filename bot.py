@@ -1,37 +1,40 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import os
 import time
 import threading
 import requests
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # ==========================================
-# ENV VARIABLES
+# TELEGRAM CONFIG
 # ==========================================
 
-TOKEN = "8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs"
-CHAT_ID = "900307207"
+TOKEN = os.getenv("8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs")
+CHAT_ID = os.getenv("900307207")
 
 PORT = int(os.getenv("PORT", 10000))
 
 # ==========================================
-# CONFIG
+# BOT CONFIG
 # ==========================================
 
 CONFIG = {
 
     "min_score": 85,
 
-    "min_volume_usdt": 3_000_000,
+    "min_volume_usdt": 3000000,
 
     "min_volume_spike": 2.0,
 
     "cooldown_minutes": 45,
 
-    "max_active_trades": 5,
+    "scan_interval": 1800,
+
+    "monitor_interval": 10,
 
     "atr_tp1": 1.5,
 
@@ -42,14 +45,10 @@ CONFIG = {
     "rsi_min": 55,
 
     "rsi_max": 72,
-
-    "scan_interval": 1800,
-
-    "monitor_interval": 10,
 }
 
 # ==========================================
-# GLOBALS
+# GLOBAL VARIABLES
 # ==========================================
 
 active_trades = {}
@@ -57,7 +56,7 @@ active_trades = {}
 cooldowns = {}
 
 # ==========================================
-# TELEGRAM
+# TELEGRAM MESSAGE
 # ==========================================
 
 def send_telegram(message):
@@ -70,8 +69,11 @@ def send_telegram(message):
         )
 
         payload = {
+
             "chat_id": CHAT_ID,
+
             "text": message,
+
             "parse_mode": "Markdown"
         }
 
@@ -88,7 +90,7 @@ def send_telegram(message):
         print(f"Telegram Error: {e}")
 
 # ==========================================
-# INDICATORS
+# EMA
 # ==========================================
 
 def compute_ema(series, length):
@@ -98,6 +100,10 @@ def compute_ema(series, length):
         .ewm(span=length, adjust=False)
         .mean()
     )
+
+# ==========================================
+# RSI
+# ==========================================
 
 def compute_rsi(series, length=14):
 
@@ -121,7 +127,13 @@ def compute_rsi(series, length=14):
 
     rs = avg_gain / avg_loss
 
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+# ==========================================
+# ATR
+# ==========================================
 
 def compute_atr(high, low, close, length=14):
 
@@ -136,55 +148,9 @@ def compute_atr(high, low, close, length=14):
         axis=1
     ).max(axis=1)
 
-    return tr.rolling(length).mean()
+    atr = tr.rolling(length).mean()
 
-def compute_adx(df, period=14):
-
-    high = df['high']
-
-    low = df['low']
-
-    close = df['close']
-
-    plus_dm = high.diff()
-
-    minus_dm = low.diff().abs()
-
-    plus_dm[plus_dm < 0] = 0
-
-    minus_dm[minus_dm < 0] = 0
-
-    tr1 = high - low
-
-    tr2 = abs(high - close.shift())
-
-    tr3 = abs(low - close.shift())
-
-    tr = pd.concat(
-        [tr1, tr2, tr3],
-        axis=1
-    ).max(axis=1)
-
-    atr = tr.rolling(period).mean()
-
-    plus_di = (
-        100
-        * plus_dm.rolling(period).mean()
-        / atr
-    )
-
-    minus_di = (
-        100
-        * minus_dm.rolling(period).mean()
-        / atr
-    )
-
-    dx = (
-        abs(plus_di - minus_di)
-        / (plus_di + minus_di)
-    ) * 100
-
-    return dx.rolling(period).mean()
+    return atr
 
 # ==========================================
 # BINANCE DATA
@@ -217,37 +183,70 @@ def get_binance_data(
             return pd.DataFrame()
 
         df = pd.DataFrame(data, columns=[
+
             'time',
+
             'open',
+
             'high',
+
             'low',
+
             'close',
-            'vol',
+
+            'volume',
+
             'c_time',
+
             'q_v',
+
             'tr',
+
             'tb',
+
             'tq',
+
             'i'
         ])
 
-        cols = [
+        numeric_cols = [
+
             'open',
+
             'high',
+
             'low',
+
             'close',
-            'vol'
+
+            'volume'
         ]
 
-        df[cols] = df[cols].astype(float)
+        df[numeric_cols] = (
+            df[numeric_cols]
+            .astype(float)
+        )
 
-        df['ema20'] = compute_ema(df['close'], 20)
+        # INDICATORS
 
-        df['ema50'] = compute_ema(df['close'], 50)
+        df['ema20'] = compute_ema(
+            df['close'],
+            20
+        )
 
-        df['ema200'] = compute_ema(df['close'], 200)
+        df['ema50'] = compute_ema(
+            df['close'],
+            50
+        )
 
-        df['rsi'] = compute_rsi(df['close'])
+        df['ema200'] = compute_ema(
+            df['close'],
+            200
+        )
+
+        df['rsi'] = compute_rsi(
+            df['close']
+        )
 
         df['atr'] = compute_atr(
             df['high'],
@@ -255,10 +254,8 @@ def get_binance_data(
             df['close']
         )
 
-        df['adx'] = compute_adx(df)
-
         df['vol_sma'] = (
-            df['vol']
+            df['volume']
             .rolling(20)
             .mean()
         )
@@ -272,7 +269,7 @@ def get_binance_data(
         return pd.DataFrame()
 
 # ==========================================
-# TOP COINS
+# GET TOP COINS
 # ==========================================
 
 def get_top_coins():
@@ -288,125 +285,128 @@ def get_top_coins():
             "&page=1"
         )
 
-        data = requests.get(
+        response = requests.get(
             url,
-            timeout=15
-        ).json()
+            timeout=10
+        )
 
-        return [
-            coin['symbol'].upper() + "USDT"
-            for coin in data
-            if coin['symbol'].isalpha()
-        ]
+        data = response.json()
+
+        symbols = []
+
+        for coin in data:
+
+            symbol = (
+                coin['symbol']
+                .upper()
+            )
+
+            symbols.append(
+                symbol + "USDT"
+            )
+
+        return symbols[:30]
 
     except:
 
         return [
+
             "BTCUSDT",
+
             "ETHUSDT",
+
             "SOLUSDT",
-            "BNBUSDT"
+
+            "BNBUSDT",
+
+            "XRPUSDT"
         ]
 
 # ==========================================
-# SCORE
+# SCORE SYSTEM
 # ==========================================
 
 def calculate_score(df):
 
     if df.empty:
+
         return 0
 
     last = df.iloc[-1]
 
     score = 0
 
+    # TREND
+
     if last['close'] > last['ema200']:
+
         score += 25
 
     if last['ema20'] > last['ema50']:
+
         score += 20
+
+    # RSI
 
     if (
         CONFIG['rsi_min']
         < last['rsi']
         < CONFIG['rsi_max']
     ):
-        score += 15
+
+        score += 20
+
+    # VOLUME SPIKE
 
     vol_ratio = (
-        last['vol']
+        last['volume']
         / last['vol_sma']
     )
 
     if vol_ratio >= CONFIG['min_volume_spike']:
+
         score += 20
 
+    # LIQUIDITY
+
     usdt_volume = (
-        last['vol']
+        last['volume']
         * last['close']
     )
 
     if usdt_volume >= CONFIG['min_volume_usdt']:
-        score += 10
 
-    if last['adx'] > 22:
-        score += 10
+        score += 15
 
     return min(score, 100)
 
 # ==========================================
-# MTF FILTER
-# ==========================================
-
-def multi_timeframe_filter(symbol):
-
-    try:
-
-        df15 = get_binance_data(symbol, '15m')
-
-        df1h = get_binance_data(symbol, '1h')
-
-        if df15.empty or df1h.empty:
-            return False
-
-        last15 = df15.iloc[-1]
-
-        last1h = df1h.iloc[-1]
-
-        return (
-            last15['ema20']
-            > last15['ema50']
-            and
-            last1h['ema20']
-            > last1h['ema50']
-        )
-
-    except:
-
-        return False
-
-# ==========================================
-# COOLDOWN
+# COOLDOWN CHECK
 # ==========================================
 
 def is_on_cooldown(symbol):
 
     if symbol not in cooldowns:
+
         return False
 
     elapsed = (
+
         datetime.now()
+
         - cooldowns[symbol]
+
     ).seconds / 60
 
     return (
+
         elapsed
+
         < CONFIG['cooldown_minutes']
     )
 
 # ==========================================
-# SIGNAL
+# SEND SIGNAL
 # ==========================================
 
 def send_signal(
@@ -418,12 +418,12 @@ def send_signal(
     score
 ):
 
-    msg = f"""
-🚀 *HIGH PROBABILITY SCALP*
+    message = f"""
+🚀 HIGH PROBABILITY SCALP
 
 💎 {symbol}
 
-🤖 AI SCORE: {score}/100
+🤖 SCORE: {score}/100
 
 💰 ENTRY: {entry:.4f}
 
@@ -433,45 +433,43 @@ def send_signal(
 
 🛑 SL: {sl:.4f}
 
-🔥 Trend Confirmed
+🔥 TREND CONFIRMED
 """
 
-    send_telegram(msg)
+    send_telegram(message)
 
 # ==========================================
-# SCAN MARKET
+# MARKET SCAN
 # ==========================================
 
 def scan_market():
 
-    print(f"[{datetime.now()}] SCANNING")
-
-    if len(active_trades) >= CONFIG['max_active_trades']:
-        return
+    print(f"[{datetime.now()}] SCANNING MARKET")
 
     symbols = get_top_coins()
 
-    for symbol in symbols[:40]:
+    for symbol in symbols:
 
         try:
 
             if symbol in active_trades:
+
                 continue
 
             if is_on_cooldown(symbol):
-                continue
 
-            if not multi_timeframe_filter(symbol):
                 continue
 
             df = get_binance_data(symbol)
 
             if df.empty:
+
                 continue
 
             score = calculate_score(df)
 
             if score < CONFIG['min_score']:
+
                 continue
 
             last = df.iloc[-1]
@@ -505,20 +503,26 @@ def scan_market():
             )
 
             active_trades[symbol] = {
+
                 "entry": entry,
+
                 "tp1": tp1,
+
                 "tp2": tp2,
+
                 "sl": sl
             }
 
             cooldowns[symbol] = datetime.now()
 
+            print(f"SIGNAL SENT: {symbol}")
+
         except Exception as e:
 
-            print(f"{symbol} SCAN ERROR: {e}")
+            print(f"{symbol} ERROR: {e}")
 
 # ==========================================
-# MONITOR
+# MONITOR TRADES
 # ==========================================
 
 def monitor_trades():
@@ -538,9 +542,12 @@ def monitor_trades():
                 )
 
                 if df.empty:
+
                     continue
 
                 price = df['close'].iloc[-1]
+
+                # TAKE PROFIT
 
                 if price >= trade['tp2']:
 
@@ -550,10 +557,12 @@ def monitor_trades():
 
                     del active_trades[symbol]
 
+                # STOP LOSS
+
                 elif price <= trade['sl']:
 
                     send_telegram(
-                        f"🛑 {symbol} STOP LOSS"
+                        f"🛑 {symbol} STOP LOSS HIT"
                     )
 
                     del active_trades[symbol]
@@ -581,7 +590,7 @@ def periodic_scan():
         )
 
 # ==========================================
-# HEALTH CHECK
+# HEALTH SERVER
 # ==========================================
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -593,7 +602,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         self.wfile.write(
-            b"BOT IS RUNNING"
+            b"BOT RUNNING"
         )
 
 def run_health():
@@ -611,15 +620,21 @@ def run_health():
 
 def main():
 
+    # HEALTH CHECK
+
     threading.Thread(
         target=run_health,
         daemon=True
     ).start()
 
+    # MONITOR
+
     threading.Thread(
         target=monitor_trades,
         daemon=True
     ).start()
+
+    # MARKET SCAN
 
     threading.Thread(
         target=periodic_scan,
@@ -633,8 +648,13 @@ def main():
     print("BOT RUNNING")
 
     while True:
+
         time.sleep(60)
 
+# ==========================================
+# START
+# ==========================================
+
 if __name__ == "__main__":
-    main()if __name__ == "__main__":
-    main()
+
+    main()    main()
