@@ -1,5 +1,2 @@
-requests
 pandas
-numpy
-feedparser
-yfinance
+requests
