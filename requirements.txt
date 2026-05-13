@@ -1,8 +1,7 @@
 python-telegram-bot==20.7
-pandas
-pandas-ta
 requests
+pandas
+numpy
 feedparser
 yfinance
 deep-translator
-numpy
