@@ -1,46 +1,73 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+# ==========================================
+# IMPORTS
+# ==========================================
+
 import os
 import time
 import threading
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from datetime import datetime
+from http.server import (
+    BaseHTTPRequestHandler,
+    HTTPServer
+)
 
 # ==========================================
-# TELEGRAM CONFIG
+# TELEGRAM SETTINGS
 # ==========================================
 
-TOKEN = os.getenv("8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs")
-CHAT_ID = os.getenv("900307207")
+TOKEN = "8497098367:AAFUMHaUs90r1V3KB_8_8HFWBv1ZHMfUhhM"
 
-PORT = int(os.getenv("PORT", 10000))
+CHAT_ID = "900307207"
+
+PORT = int(
+    os.getenv("PORT", 10000)
+)
 
 # ==========================================
-# BOT CONFIG
+# CONFIG
 # ==========================================
 
 CONFIG = {
 
+    # MINIMUM SIGNAL SCORE
+
     "min_score": 85,
+
+    # MINIMUM VOLUME
 
     "min_volume_usdt": 3000000,
 
+    # VOLUME SPIKE
+
     "min_volume_spike": 2.0,
+
+    # COOLDOWN
 
     "cooldown_minutes": 45,
 
+    # SCAN EVERY
+
     "scan_interval": 1800,
 
+    # MONITOR EVERY
+
     "monitor_interval": 10,
+
+    # ATR TARGETS
 
     "atr_tp1": 1.5,
 
     "atr_tp2": 3.0,
 
     "atr_sl": 1.8,
+
+    # RSI FILTER
 
     "rsi_min": 55,
 
@@ -56,7 +83,7 @@ active_trades = {}
 cooldowns = {}
 
 # ==========================================
-# TELEGRAM MESSAGE
+# SEND TELEGRAM
 # ==========================================
 
 def send_telegram(message):
@@ -64,8 +91,8 @@ def send_telegram(message):
     try:
 
         url = (
-            f"https://api.telegram.org/bot"
-            f"{TOKEN}/sendMessage"
+            f"https://api.telegram.org/"
+            f"bot{TOKEN}/sendMessage"
         )
 
         payload = {
@@ -135,20 +162,33 @@ def compute_rsi(series, length=14):
 # ATR
 # ==========================================
 
-def compute_atr(high, low, close, length=14):
+def compute_atr(
+    high,
+    low,
+    close,
+    length=14
+):
 
     tr1 = high - low
 
-    tr2 = abs(high - close.shift())
+    tr2 = abs(
+        high - close.shift()
+    )
 
-    tr3 = abs(low - close.shift())
+    tr3 = abs(
+        low - close.shift()
+    )
 
     tr = pd.concat(
         [tr1, tr2, tr3],
         axis=1
     ).max(axis=1)
 
-    atr = tr.rolling(length).mean()
+    atr = (
+        tr
+        .rolling(length)
+        .mean()
+    )
 
     return atr
 
@@ -165,7 +205,8 @@ def get_binance_data(
     try:
 
         url = (
-            "https://api.binance.com/api/v3/klines"
+            "https://api.binance.com/"
+            "api/v3/klines"
             f"?symbol={symbol}"
             f"&interval={interval}"
             f"&limit={limit}"
@@ -196,20 +237,20 @@ def get_binance_data(
 
             'volume',
 
-            'c_time',
+            'close_time',
 
-            'q_v',
+            'qav',
 
-            'tr',
+            'trades',
 
-            'tb',
+            'tbav',
 
-            'tq',
+            'tqav',
 
-            'i'
+            'ignore'
         ])
 
-        numeric_cols = [
+        numeric_columns = [
 
             'open',
 
@@ -222,12 +263,14 @@ def get_binance_data(
             'volume'
         ]
 
-        df[numeric_cols] = (
-            df[numeric_cols]
+        df[numeric_columns] = (
+            df[numeric_columns]
             .astype(float)
         )
 
+        # =====================
         # INDICATORS
+        # =====================
 
         df['ema20'] = compute_ema(
             df['close'],
@@ -277,8 +320,8 @@ def get_top_coins():
     try:
 
         url = (
-            "https://api.coingecko.com/api/v3/"
-            "coins/markets"
+            "https://api.coingecko.com/"
+            "api/v3/coins/markets"
             "?vs_currency=usd"
             "&order=market_cap_desc"
             "&per_page=50"
@@ -319,7 +362,9 @@ def get_top_coins():
 
             "BNBUSDT",
 
-            "XRPUSDT"
+            "XRPUSDT",
+
+            "DOGEUSDT"
         ]
 
 # ==========================================
@@ -342,6 +387,8 @@ def calculate_score(df):
 
         score += 25
 
+    # EMA CROSS
+
     if last['ema20'] > last['ema50']:
 
         score += 20
@@ -349,8 +396,11 @@ def calculate_score(df):
     # RSI
 
     if (
+
         CONFIG['rsi_min']
+
         < last['rsi']
+
         < CONFIG['rsi_max']
     ):
 
@@ -359,7 +409,9 @@ def calculate_score(df):
     # VOLUME SPIKE
 
     vol_ratio = (
+
         last['volume']
+
         / last['vol_sma']
     )
 
@@ -370,7 +422,9 @@ def calculate_score(df):
     # LIQUIDITY
 
     usdt_volume = (
+
         last['volume']
+
         * last['close']
     )
 
@@ -419,7 +473,7 @@ def send_signal(
 ):
 
     message = f"""
-🚀 HIGH PROBABILITY SCALP
+🚀 *HIGH PROBABILITY SCALP*
 
 💎 {symbol}
 
@@ -444,7 +498,10 @@ def send_signal(
 
 def scan_market():
 
-    print(f"[{datetime.now()}] SCANNING MARKET")
+    print(
+        f"[{datetime.now()}]"
+        f" SCANNING MARKET"
+    )
 
     symbols = get_top_coins()
 
@@ -452,13 +509,25 @@ def scan_market():
 
         try:
 
+            # =====================
+            # ACTIVE TRADE
+            # =====================
+
             if symbol in active_trades:
 
                 continue
 
+            # =====================
+            # COOLDOWN
+            # =====================
+
             if is_on_cooldown(symbol):
 
                 continue
+
+            # =====================
+            # GET DATA
+            # =====================
 
             df = get_binance_data(symbol)
 
@@ -466,11 +535,19 @@ def scan_market():
 
                 continue
 
+            # =====================
+            # SCORE
+            # =====================
+
             score = calculate_score(df)
 
             if score < CONFIG['min_score']:
 
                 continue
+
+            # =====================
+            # ENTRY
+            # =====================
 
             last = df.iloc[-1]
 
@@ -493,6 +570,10 @@ def scan_market():
                 - atr * CONFIG['atr_sl']
             )
 
+            # =====================
+            # SEND ALERT
+            # =====================
+
             send_signal(
                 symbol,
                 entry,
@@ -501,6 +582,10 @@ def scan_market():
                 sl,
                 score
             )
+
+            # =====================
+            # SAVE TRADE
+            # =====================
 
             active_trades[symbol] = {
 
@@ -515,7 +600,9 @@ def scan_market():
 
             cooldowns[symbol] = datetime.now()
 
-            print(f"SIGNAL SENT: {symbol}")
+            print(
+                f"SIGNAL SENT: {symbol}"
+            )
 
         except Exception as e:
 
@@ -531,9 +618,13 @@ def monitor_trades():
 
         try:
 
-            for symbol in list(active_trades.keys()):
+            for symbol in list(
+                active_trades.keys()
+            ):
 
-                trade = active_trades[symbol]
+                trade = (
+                    active_trades[symbol]
+                )
 
                 df = get_binance_data(
                     symbol,
@@ -545,9 +636,14 @@ def monitor_trades():
 
                     continue
 
-                price = df['close'].iloc[-1]
+                price = (
+                    df['close']
+                    .iloc[-1]
+                )
 
-                # TAKE PROFIT
+                # =====================
+                # TP2
+                # =====================
 
                 if price >= trade['tp2']:
 
@@ -557,7 +653,9 @@ def monitor_trades():
 
                     del active_trades[symbol]
 
+                # =====================
                 # STOP LOSS
+                # =====================
 
                 elif price <= trade['sl']:
 
@@ -569,7 +667,9 @@ def monitor_trades():
 
         except Exception as e:
 
-            print(f"MONITOR ERROR: {e}")
+            print(
+                f"MONITOR ERROR: {e}"
+            )
 
         time.sleep(
             CONFIG['monitor_interval']
@@ -590,10 +690,12 @@ def periodic_scan():
         )
 
 # ==========================================
-# HEALTH SERVER
+# HEALTH CHECK SERVER
 # ==========================================
 
-class HealthHandler(BaseHTTPRequestHandler):
+class HealthHandler(
+    BaseHTTPRequestHandler
+):
 
     def do_GET(self):
 
@@ -608,7 +710,9 @@ class HealthHandler(BaseHTTPRequestHandler):
 def run_health():
 
     server = HTTPServer(
+
         ('0.0.0.0', PORT),
+
         HealthHandler
     )
 
@@ -620,7 +724,7 @@ def run_health():
 
 def main():
 
-    # HEALTH CHECK
+    # HEALTH SERVER
 
     threading.Thread(
         target=run_health,
@@ -634,12 +738,14 @@ def main():
         daemon=True
     ).start()
 
-    # MARKET SCAN
+    # SCANNER
 
     threading.Thread(
         target=periodic_scan,
         daemon=True
     ).start()
+
+    # START MESSAGE
 
     send_telegram(
         "✅ BOT STARTED SUCCESSFULLY"
@@ -652,8 +758,9 @@ def main():
         time.sleep(60)
 
 # ==========================================
-# START
+# START BOT
 # ==========================================
 
 if __name__ == "__main__":
+
     main()
