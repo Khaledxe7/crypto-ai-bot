@@ -1,766 +1,158 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-# ==========================================
-# IMPORTS
-# ==========================================
+"""
+بوت سكالبينغ – يعمل فوراً ويرسل صفقات كثيرة
+"""
 
 import os
 import time
+import json
 import threading
 import requests
 import pandas as pd
-
+import numpy as np
 from datetime import datetime
-from http.server import (
-    BaseHTTPRequestHandler,
-    HTTPServer
-)
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ==========================================
-# TELEGRAM SETTINGS
-# ==========================================
-
-TOKEN = "8497098367:AAFUMHaUs90r1V3KB_8_8HFWBv1ZHMfUhhM"
-
+# ========== إعداداتك ==========
+TOKEN = "8497098367:AAFNrEefvzzTcQGAmdAIdYaWhQJSrmqh5zs"
 CHAT_ID = "900307207"
+PORT = int(os.getenv("PORT", 10000))
 
-PORT = int(
-    os.getenv("PORT", 10000)
-)
-
-# ==========================================
-# CONFIG
-# ==========================================
-
+# إعدادات خفيفة جداً (لإرسال صفقات فورية)
 CONFIG = {
-
-    # MINIMUM SIGNAL SCORE
-
-    "min_score": 85,
-
-    # MINIMUM VOLUME
-
-    "min_volume_usdt": 3000000,
-
-    # VOLUME SPIKE
-
-    "min_volume_spike": 2.0,
-
-    # COOLDOWN
-
-    "cooldown_minutes": 45,
-
-    # SCAN EVERY
-
-    "scan_interval": 1800,
-
-    # MONITOR EVERY
-
-    "monitor_interval": 10,
-
-    # ATR TARGETS
-
-    "atr_tp1": 1.5,
-
-    "atr_tp2": 3.0,
-
-    "atr_sl": 1.8,
-
-    # RSI FILTER
-
-    "rsi_min": 55,
-
-    "rsi_max": 72,
+    "min_volume_usdt": 10_000,
+    "min_volume_spike": 1.0,
+    "min_score": 10,
+    "cooldown_minutes": 1,
+    "atr_multiplier_tp1": 1.2,
+    "atr_multiplier_tp2": 2.2,
+    "atr_multiplier_sl": 1.2,
 }
 
-# ==========================================
-# GLOBAL VARIABLES
-# ==========================================
-
-active_trades = {}
-
-cooldowns = {}
-
-# ==========================================
-# SEND TELEGRAM
-# ==========================================
-
+# ========== إرسال رسالة إلى تليجرام ==========
 def send_telegram(message):
-
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{TOKEN}/sendMessage"
-        )
-
-        payload = {
-
-            "chat_id": CHAT_ID,
-
-            "text": message,
-
-            "parse_mode": "Markdown"
-        }
-
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=10
-        )
-
-        print(response.text)
-
+        requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=10)
     except Exception as e:
+        print(f"خطأ: {e}")
 
-        print(f"Telegram Error: {e}")
-
-# ==========================================
-# EMA
-# ==========================================
-
+# ========== المؤشرات الفنية ==========
 def compute_ema(series, length):
-
-    return (
-        series
-        .ewm(span=length, adjust=False)
-        .mean()
-    )
-
-# ==========================================
-# RSI
-# ==========================================
+    return series.ewm(span=length, adjust=False).mean()
 
 def compute_rsi(series, length=14):
-
     delta = series.diff()
-
     gain = delta.clip(lower=0)
-
     loss = -delta.clip(upper=0)
-
-    avg_gain = (
-        gain
-        .rolling(length)
-        .mean()
-    )
-
-    avg_loss = (
-        loss
-        .rolling(length)
-        .mean()
-    )
-
+    avg_gain = gain.rolling(window=length, min_periods=length).mean()
+    avg_loss = loss.rolling(window=length, min_periods=length).mean()
     rs = avg_gain / avg_loss
-
     rsi = 100 - (100 / (1 + rs))
-
     return rsi
 
-# ==========================================
-# ATR
-# ==========================================
-
-def compute_atr(
-    high,
-    low,
-    close,
-    length=14
-):
-
+def compute_atr(high, low, close, length=14):
     tr1 = high - low
-
-    tr2 = abs(
-        high - close.shift()
-    )
-
-    tr3 = abs(
-        low - close.shift()
-    )
-
-    tr = pd.concat(
-        [tr1, tr2, tr3],
-        axis=1
-    ).max(axis=1)
-
-    atr = (
-        tr
-        .rolling(length)
-        .mean()
-    )
-
-    return atr
-
-# ==========================================
-# BINANCE DATA
-# ==========================================
-
-def get_binance_data(
-    symbol,
-    interval='15m',
-    limit=300
-):
-
-    try:
-
-        url = (
-            "https://api.binance.com/"
-            "api/v3/klines"
-            f"?symbol={symbol}"
-            f"&interval={interval}"
-            f"&limit={limit}"
-        )
-
-        response = requests.get(
-            url,
-            timeout=10
-        )
-
-        data = response.json()
-
-        if not isinstance(data, list):
-
-            return pd.DataFrame()
-
-        df = pd.DataFrame(data, columns=[
-
-            'time',
-
-            'open',
-
-            'high',
-
-            'low',
-
-            'close',
-
-            'volume',
-
-            'close_time',
-
-            'qav',
-
-            'trades',
-
-            'tbav',
-
-            'tqav',
-
-            'ignore'
-        ])
-
-        numeric_columns = [
-
-            'open',
-
-            'high',
-
-            'low',
-
-            'close',
-
-            'volume'
-        ]
-
-        df[numeric_columns] = (
-            df[numeric_columns]
-            .astype(float)
-        )
-
-        # =====================
-        # INDICATORS
-        # =====================
-
-        df['ema20'] = compute_ema(
-            df['close'],
-            20
-        )
-
-        df['ema50'] = compute_ema(
-            df['close'],
-            50
-        )
-
-        df['ema200'] = compute_ema(
-            df['close'],
-            200
-        )
-
-        df['rsi'] = compute_rsi(
-            df['close']
-        )
-
-        df['atr'] = compute_atr(
-            df['high'],
-            df['low'],
-            df['close']
-        )
-
-        df['vol_sma'] = (
-            df['volume']
-            .rolling(20)
-            .mean()
-        )
-
-        return df.dropna()
-
-    except Exception as e:
-
-        print(f"{symbol} ERROR: {e}")
-
-        return pd.DataFrame()
-
-# ==========================================
-# GET TOP COINS
-# ==========================================
-
-def get_top_coins():
-
-    try:
-
-        url = (
-            "https://api.coingecko.com/"
-            "api/v3/coins/markets"
-            "?vs_currency=usd"
-            "&order=market_cap_desc"
-            "&per_page=50"
-            "&page=1"
-        )
-
-        response = requests.get(
-            url,
-            timeout=10
-        )
-
-        data = response.json()
-
-        symbols = []
-
-        for coin in data:
-
-            symbol = (
-                coin['symbol']
-                .upper()
-            )
-
-            symbols.append(
-                symbol + "USDT"
-            )
-
-        return symbols[:30]
-
-    except:
-
-        return [
-
-            "BTCUSDT",
-
-            "ETHUSDT",
-
-            "SOLUSDT",
-
-            "BNBUSDT",
-
-            "XRPUSDT",
-
-            "DOGEUSDT"
-        ]
-
-# ==========================================
-# SCORE SYSTEM
-# ==========================================
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(window=length).mean()
+
+def get_binance_data(symbol, interval='15m', limit=300):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    data = requests.get(url, timeout=10).json()
+    df = pd.DataFrame(data, columns=['time','open','high','low','close','vol','c_time','q_v','tr','tb','tq','i']).astype(float)
+    df['ema20'] = compute_ema(df['close'], 20)
+    df['ema50'] = compute_ema(df['close'], 50)
+    df['ema200'] = compute_ema(df['close'], 200)
+    df['rsi'] = compute_rsi(df['close'], 14)
+    df['atr'] = compute_atr(df['high'], df['low'], df['close'], 14)
+    df['vol_sma'] = df['vol'].rolling(window=20).mean()
+    return df
 
 def calculate_score(df):
-
     if df.empty:
-
         return 0
-
     last = df.iloc[-1]
-
     score = 0
-
-    # TREND
-
     if last['close'] > last['ema200']:
-
         score += 25
-
-    # EMA CROSS
-
     if last['ema20'] > last['ema50']:
-
         score += 20
-
-    # RSI
-
-    if (
-
-        CONFIG['rsi_min']
-
-        < last['rsi']
-
-        < CONFIG['rsi_max']
-    ):
-
+    if 55 < last['rsi'] < 75:
         score += 20
-
-    # VOLUME SPIKE
-
-    vol_ratio = (
-
-        last['volume']
-
-        / last['vol_sma']
-    )
-
-    if vol_ratio >= CONFIG['min_volume_spike']:
-
+    vol_ratio = last['vol'] / last['vol_sma'] if last['vol_sma'] != 0 else 1
+    if vol_ratio > CONFIG['min_volume_spike']:
         score += 20
-
-    # LIQUIDITY
-
-    usdt_volume = (
-
-        last['volume']
-
-        * last['close']
-    )
-
-    if usdt_volume >= CONFIG['min_volume_usdt']:
-
+    if last['vol'] * last['close'] > CONFIG['min_volume_usdt']:
         score += 15
+    return min(100, score)
 
-    return min(score, 100)
+# ========== أفضل 100 عملة ==========
+def get_top_100_coins():
+    try:
+        url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false"
+        data = requests.get(url, timeout=15).json()
+        return [item['symbol'].upper() + 'USDT' for item in data if item['symbol'].isalpha()][:50]
+    except:
+        return ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","AVAXUSDT","DOTUSDT","LINKUSDT"]
 
-# ==========================================
-# COOLDOWN CHECK
-# ==========================================
-
-def is_on_cooldown(symbol):
-
-    if symbol not in cooldowns:
-
-        return False
-
-    elapsed = (
-
-        datetime.now()
-
-        - cooldowns[symbol]
-
-    ).seconds / 60
-
-    return (
-
-        elapsed
-
-        < CONFIG['cooldown_minutes']
-    )
-
-# ==========================================
-# SEND SIGNAL
-# ==========================================
-
-def send_signal(
-    symbol,
-    entry,
-    tp1,
-    tp2,
-    sl,
-    score
-):
-
-    message = f"""
-🚀 *HIGH PROBABILITY SCALP*
-
-💎 {symbol}
-
-🤖 SCORE: {score}/100
-
-💰 ENTRY: {entry:.4f}
-
-🎯 TP1: {tp1:.4f}
-
-🎯 TP2: {tp2:.4f}
-
-🛑 SL: {sl:.4f}
-
-🔥 TREND CONFIRMED
-"""
-
-    send_telegram(message)
-
-# ==========================================
-# MARKET SCAN
-# ==========================================
-
+# ========== فحص السوق وإرسال الإشارات ==========
 def scan_market():
-
-    print(
-        f"[{datetime.now()}]"
-        f" SCANNING MARKET"
-    )
-
-    symbols = get_top_coins()
-
-    for symbol in symbols:
-
+    print(f"[{datetime.now()}] بدء الفحص...")
+    symbols = get_top_100_coins()
+    for sym in symbols[:30]:
         try:
-
-            # =====================
-            # ACTIVE TRADE
-            # =====================
-
-            if symbol in active_trades:
-
-                continue
-
-            # =====================
-            # COOLDOWN
-            # =====================
-
-            if is_on_cooldown(symbol):
-
-                continue
-
-            # =====================
-            # GET DATA
-            # =====================
-
-            df = get_binance_data(symbol)
-
+            df = get_binance_data(sym)
             if df.empty:
-
                 continue
-
-            # =====================
-            # SCORE
-            # =====================
-
             score = calculate_score(df)
-
-            if score < CONFIG['min_score']:
-
-                continue
-
-            # =====================
-            # ENTRY
-            # =====================
-
-            last = df.iloc[-1]
-
-            entry = last['close']
-
-            atr = last['atr']
-
-            tp1 = (
-                entry
-                + atr * CONFIG['atr_tp1']
-            )
-
-            tp2 = (
-                entry
-                + atr * CONFIG['atr_tp2']
-            )
-
-            sl = (
-                entry
-                - atr * CONFIG['atr_sl']
-            )
-
-            # =====================
-            # SEND ALERT
-            # =====================
-
-            send_signal(
-                symbol,
-                entry,
-                tp1,
-                tp2,
-                sl,
-                score
-            )
-
-            # =====================
-            # SAVE TRADE
-            # =====================
-
-            active_trades[symbol] = {
-
-                "entry": entry,
-
-                "tp1": tp1,
-
-                "tp2": tp2,
-
-                "sl": sl
-            }
-
-            cooldowns[symbol] = datetime.now()
-
-            print(
-                f"SIGNAL SENT: {symbol}"
-            )
-
+            if score >= CONFIG['min_score']:
+                last = df.iloc[-1]
+                entry = last['close']
+                atr = last['atr']
+                tp1 = entry + atr * CONFIG['atr_multiplier_tp1']
+                tp2 = entry + atr * CONFIG['atr_multiplier_tp2']
+                sl = entry - atr * CONFIG['atr_multiplier_sl']
+                msg = (
+                    f"🚀 *إشارة سكالبينغ* 🚀\n\n"
+                    f"💎 {sym}\n"
+                    f"🤖 AI Score: {score}/100\n"
+                    f"💰 الدخول: {entry:.4f}\n"
+                    f"🎯 TP1: {tp1:.4f} (+{(tp1/entry-1)*100:.2f}%)\n"
+                    f"🎯 TP2: {tp2:.4f} (+{(tp2/entry-1)*100:.2f}%)\n"
+                    f"🛑 SL: {sl:.4f} (-{(1-sl/entry)*100:.2f}%)"
+                )
+                send_telegram(msg)
+                print(f"تم إرسال إشارة لـ {sym}")
+                time.sleep(CONFIG['cooldown_minutes'] * 60)
         except Exception as e:
-
-            print(f"{symbol} ERROR: {e}")
-
-# ==========================================
-# MONITOR TRADES
-# ==========================================
-
-def monitor_trades():
-
-    while True:
-
-        try:
-
-            for symbol in list(
-                active_trades.keys()
-            ):
-
-                trade = (
-                    active_trades[symbol]
-                )
-
-                df = get_binance_data(
-                    symbol,
-                    '1m',
-                    5
-                )
-
-                if df.empty:
-
-                    continue
-
-                price = (
-                    df['close']
-                    .iloc[-1]
-                )
-
-                # =====================
-                # TP2
-                # =====================
-
-                if price >= trade['tp2']:
-
-                    send_telegram(
-                        f"🏆 {symbol} TP2 HIT"
-                    )
-
-                    del active_trades[symbol]
-
-                # =====================
-                # STOP LOSS
-                # =====================
-
-                elif price <= trade['sl']:
-
-                    send_telegram(
-                        f"🛑 {symbol} STOP LOSS HIT"
-                    )
-
-                    del active_trades[symbol]
-
-        except Exception as e:
-
-            print(
-                f"MONITOR ERROR: {e}"
-            )
-
-        time.sleep(
-            CONFIG['monitor_interval']
-        )
-
-# ==========================================
-# PERIODIC SCAN
-# ==========================================
+            print(f"خطأ: {e}")
 
 def periodic_scan():
-
     while True:
-
+        time.sleep(1800)
         scan_market()
 
-        time.sleep(
-            CONFIG['scan_interval']
-        )
-
-# ==========================================
-# HEALTH CHECK SERVER
-# ==========================================
-
-class HealthHandler(
-    BaseHTTPRequestHandler
-):
-
+# ========== خادم الصحة ==========
+class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-
         self.send_response(200)
-
         self.end_headers()
-
-        self.wfile.write(
-            b"BOT RUNNING"
-        )
-
+        self.wfile.write(b"Bot is running")
 def run_health():
-
-    server = HTTPServer(
-
-        ('0.0.0.0', PORT),
-
-        HealthHandler
-    )
-
+    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
     server.serve_forever()
 
-# ==========================================
-# MAIN
-# ==========================================
-
+# ========== التشغيل ==========
 def main():
-
-    # HEALTH SERVER
-
-    threading.Thread(
-        target=run_health,
-        daemon=True
-    ).start()
-
-    # MONITOR
-
-    threading.Thread(
-        target=monitor_trades,
-        daemon=True
-    ).start()
-
-    # SCANNER
-
-    threading.Thread(
-        target=periodic_scan,
-        daemon=True
-    ).start()
-
-    # START MESSAGE
-
-    send_telegram(
-        "✅ BOT STARTED SUCCESSFULLY"
-    )
-
-    print("BOT RUNNING")
-
+    threading.Thread(target=run_health, daemon=True).start()
+    threading.Thread(target=periodic_scan, daemon=True).start()
+    send_telegram("✅ البوت يعمل (نسخة خفيفة) – سيرسل إشارات كثيرة فوراً")
+    scan_market()  # فحص فوري
     while True:
-
         time.sleep(60)
 
-# ==========================================
-# START BOT
-# ==========================================
-
 if __name__ == "__main__":
-
     main()
